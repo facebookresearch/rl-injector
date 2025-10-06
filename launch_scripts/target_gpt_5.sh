@@ -1,0 +1,80 @@
+#!/bin/bash
+
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
+set -e
+
+# Add your API keys here
+export AZURE_API_VERSION=2024-06-01
+export GPT_5_AZURE_API_VERSION=2025-03-01-preview
+export GPT_5_API_KEY=XXX
+export GPT_5_ENDPOINT=XXX
+
+export GPT_5_MINI_AZURE_API_VERSION=2025-03-01-preview
+export GPT_5_MINI_API_KEY=XXX
+export GPT_5_MINI_ENDPOINT=XXX
+
+export WANDB_PROJECT="RL-Hammer"
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+
+LR=1e-5
+RUN_NAME=rl_hammer_target_gpt_5_lora
+
+ATTACKER_MODEL_NAME_OR_PATH=meta-llama/Llama-3.1-8B-Instruct
+
+# Launch target model on GPU 7
+export CUDA_VISIBLE_DEVICES=7
+python -m vllm.entrypoints.openai.api_server \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --port 8010 > /dev/null 2>&1 &
+
+until curl -s http://localhost:8010/v1/models; do sleep 5; done
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
+accelerate launch \
+    train.py \
+    --attacker_model_name_or_path ${ATTACKER_MODEL_NAME_OR_PATH} \
+    --target_model_name_or_path "gpt-5;gpt-5-mini;meta-llama/Llama-3.1-8B-Instruct" \
+    --target_model_url "dummy;dummy;http://localhost:8010/v1" \
+    --model_wise_reward_weights 6.0 3.0 1.0 \
+    --reward_functions InjecAgentToolCallingReward \
+    --dataset data/InjecAgent/dataset/train.json \
+    --attn_implementation flash_attention_2 \
+    --num_generations 32 \
+    --num_iterations 1 \
+    --per_device_train_batch_size 16 \
+    --gradient_accumulation_steps 2 \
+    --num_train_epochs 80 \
+    --bf16 True \
+    --beta 0.0 \
+    --warmup_ratio 0.03 \
+    --gradient_checkpointing True \
+    --learning_rate ${LR} \
+    --lr_scheduler_type constant_with_warmup \
+    --use_peft True \
+    --lora_r 128 \
+    --lora_alpha 64 \
+    --lora_dropout 0.05 \
+    --logging_steps 1 \
+    --save_strategy epoch \
+    --save_only_model True \
+    --output_dir checkpoints/${RUN_NAME} \
+    --report_to wandb \
+    --run_name ${RUN_NAME}
+
+# Eval all checkpoints
+export CUDA_VISIBLE_DEVICES=0
+for dir in checkpoints/${RUN_NAME}/*; do
+    if [ -d "$dir" ]; then
+        python injecagent_eval.py \
+            --attacker_model_name_or_path ${dir} \
+            --attacker_base_model_name_or_path ${ATTACKER_MODEL_NAME_OR_PATH} \
+            --target_model_name_or_path gpt-5 \
+            --validation_data_path data/InjecAgent/dataset/eval.json \
+            --enable_wandb True \
+            --run_name eval_${RUN_NAME}_attack_gpt_5
+    fi
+done
