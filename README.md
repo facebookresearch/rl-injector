@@ -1,6 +1,6 @@
 # RL Is a Hammer and LLMs Are Nails: A Simple Reinforcement Learning Recipe for Strong Prompt Injection
 
-This code is the official implementation of [RL-Hammer]().
+This code is the official implementation of [RL-Hammer](https://arxiv.org/abs/2510.04885).
 
 ## About
 We introduce RL-Hammer, a simple recipe for training attacker models that automatically learn to perform strong prompt injections and jailbreaks via reinforcement learning. RL-Hammer requires no warm-up data and can be trained entirely from scratch. To achieve high ASRs against industrial-level models with defenses, we propose a set of practical techniques that enable highly effective, universal attacks.
