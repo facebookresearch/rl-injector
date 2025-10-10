@@ -26,7 +26,9 @@ Second, download the [tool file](https://github.com/uiuc-kang-lab/InjecAgent/blo
 Run `python merge_meta_secalign.py` to merge Meta-SecAlign lora if you want to run some tests on Meta-SecAlign
 
 ### Training
-We have several example scripts under [launch_scripts](launch_scripts/) to train the attacker model under different target models. Make sure you add your API keys in the script. 
+We have several example scripts under [launch_scripts](launch_scripts/) to train the attacker model under different target models. Make sure you add your API keys in the script.
+
+Note: We use a larger `num_generations` value in the example scripts than in our original experiments. Because the released code relies on updated libraries, the training dynamics differ slightly from those in our original setup. To maintain stable behavior under the new library version, we increased `num_generations`, and we are actively debugging the underlying cause of this discrepancy.
 
 Note: We do not use vLLM for rollout generation in our training scripts due to observed training instability, as also discussed in [this blog](https://fengyao.notion.site/off-policy-rl).
 
