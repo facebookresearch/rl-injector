@@ -7,6 +7,7 @@
 
 set -e
 
+# Add your API key here
 export GEMINI_API_KEY=XXX
 
 export WANDB_PROJECT="RL-Hammer"

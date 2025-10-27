@@ -9,8 +9,14 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from typing import List
 import time
+import numpy as np
+import random
+from functools import partial
+import litellm
 
+import torch
 from transformers import AutoTokenizer
+import evaluate
 
 from anthropic import AnthropicBedrock, RateLimitError
 from openai.types.chat import (
@@ -22,6 +28,8 @@ from openai.types.chat.chat_completion_message_tool_call import Function
 from utils import (
     INJECAGENT_SYS_PROMPT,
     INJECAGENT_USER_PROMPT,
+    DIVERSITY_JUDGE_SYS_PROMPT,
+    DIVERSITY_JUDGE_USER_PROMPT,
     injecagent_get_tool_dict,
     to_anthropic_tools,
     to_anthropic_tool_call,
@@ -477,6 +485,191 @@ class InjecAgentToolCallingReward:
         return rewards
 
 
+class BLEUDiversityReward:
+    def __init__(self, config):
+        self.__name__ = "BLEUDiversityReward"
+        self.config = config
+
+        self.bleu = evaluate.load("bleu")
+
+    def __call__(self, prompts, completions, **kwargs):
+        adv_goals, adv_prompts = [], []
+        for i in range(len(prompts)):
+            curr_prompt = prompts[i][0]["content"]
+            curr_completion = completions[i][0]["content"]
+            goal = extract_attack_goal(curr_prompt)
+            adv = extract_attack_prompt(curr_completion)
+            adv_goals.append(goal)
+            adv_prompts.append(adv)
+
+        rewards = [0.0] * len(prompts)
+        for i in range(len(adv_prompts)):
+            # Skip empty prompts
+            if adv_prompts[i].strip() == "":
+                rewards[i] = 0.0
+                continue
+
+            predictions = [adv_prompts[i]]
+            references = adv_prompts[:i] + adv_prompts[i + 1 :]
+
+            # Remove empty prompts from references
+            references = [ref for ref in references if ref.strip() != ""]
+            if len(references) == 0:
+                rewards[i] = 0.0
+                continue
+
+            bleu_score = self.bleu.compute(
+                predictions=predictions, references=[references]
+            )["bleu"]
+
+            predictions_rev = adv_prompts[:i] + adv_prompts[i + 1 :]
+            references_rev = [[adv_prompts[i]] for _ in predictions_rev]
+            bleu_rev = self.bleu.compute(
+                predictions=predictions_rev, references=references_rev
+            )["bleu"]
+            rewards[i] = 1.0 - (bleu_score + bleu_rev) / 2.0
+
+        return rewards
+
+
+class BERTScoreDiversityReward:
+    def __init__(self, config):
+        self.__name__ = "BERTScoreDiversityReward"
+        self.config = config
+
+        self.bertscore = evaluate.load("bertscore", device="cuda")
+
+    def __call__(self, prompts, completions, **kwargs):
+        adv_prompts = [
+            extract_attack_prompt(completions[i][0]["content"])
+            for i in range(len(prompts))
+        ]
+
+        rewards = [0.0] * len(prompts)
+        for i in range(len(adv_prompts)):
+            predictions = [adv_prompts[i]] * (len(adv_prompts) - 1)
+            references = adv_prompts[:i] + adv_prompts[i + 1 :]
+            bertscores = self.bertscore.compute(
+                predictions=predictions,
+                references=references,
+                lang="en",
+                device="cuda",
+            )
+            precisions = bertscores["precision"]
+            mean_precision = sum(precisions) / len(precisions)
+
+            rewards[i] = 1.0 - mean_precision
+
+        return rewards
+
+
+class EmbeddingDiversityReward:
+    def __init__(self, config):
+        self.__name__ = "EmbeddingDiversityReward"
+        self.config = config
+
+        self.client = OpenAI(base_url="http://localhost:8030/v1", api_key="EMPTY")
+        self.model_name = "jinaai/jina-embeddings-v3"
+
+    def __call__(self, prompts, completions, **kwargs):
+        adv_prompts = [
+            extract_attack_prompt(completions[i][0]["content"])
+            for i in range(len(prompts))
+        ]
+
+        # Query vLLM embedding API
+        response = self.client.embeddings.create(
+            model=self.model_name, input=adv_prompts
+        )
+        embeddings = np.array([r.embedding for r in response.data])
+
+        # Compute cosine similarity matrix
+        emb_tensor = torch.tensor(embeddings, dtype=torch.float32)
+        sim_matrix = emb_tensor @ emb_tensor.T  # shape: [N, N]
+        N = sim_matrix.shape[0]
+
+        rewards = [0.0] * len(prompts)
+        for i in range(N):
+            sims = torch.cat([sim_matrix[i, :i], sim_matrix[i, i + 1 :]])
+            avg_sim = sims.mean().item()
+            rewards[i] = 1.0 - avg_sim
+
+        return rewards
+
+
+class LLMJudgeDiversityReward:
+    def __init__(self, config):
+        self.__name__ = "LLMJudgeDiversityReward"
+        self.config = config
+
+        model_name = "gpt-4o-mini"
+        env_name = model_name.upper().replace("-", "_")
+        api_version = os.environ[f"{env_name}_AZURE_API_VERSION"]
+        api_key = os.environ[f"{env_name}_API_KEY"]
+        endpoint = os.environ[f"{env_name}_ENDPOINT"]
+        endpoint = f"https://{endpoint}"
+        model_name = f"azure/{model_name}"
+
+        self.client = partial(
+            litellm.batch_completion,
+            model=model_name,
+            api_version=api_version,
+            api_key=api_key,
+            api_base=endpoint,
+            max_tokens=self.config.target_model_max_completion_length,
+            timeout=60,
+            num_retries=5,
+            n=1,
+            max_workers=16,
+        )
+
+    def __call__(self, prompts, completions, **kwargs):
+        # Extract attack prompts
+        adv_goals = [
+            extract_attack_goal(prompts[i][0]["content"]) for i in range(len(prompts))
+        ]
+        adv_prompts = [
+            extract_attack_prompt(completions[i][0]["content"])
+            for i in range(len(prompts))
+        ]
+
+        # Randomly pick a pivot prompt, so we don't have to do N^2 comparisons
+        pivot_id = random.randint(0, len(adv_prompts) - 1)
+        pivot_prompt = adv_prompts[pivot_id]
+
+        messages = [
+            [
+                {"role": "system", "content": DIVERSITY_JUDGE_SYS_PROMPT},
+                {
+                    "role": "user",
+                    "content": DIVERSITY_JUDGE_USER_PROMPT.format(
+                        goal=adv_goals[i],
+                        attack_1=pivot_prompt,
+                        attack_2=adv_prompts[i],
+                    ),
+                },
+            ]
+            for i in range(len(adv_prompts))
+        ]
+        judge_model_outputs = self.client(messages=messages)
+        judge_model_outputs = [
+            output.choices[0].message.content for output in judge_model_outputs
+        ]
+
+        rewards = [0.0] * len(prompts)
+        for i in range(len(prompts)):
+            if "different" in judge_model_outputs[i].lower() and i != pivot_id:
+                rewards[i] = 1.0
+            else:
+                rewards[i] = 0.0
+
+        return rewards
+
+
 ALL_REWARD_FUNCS = {
     "InjecAgentToolCallingReward": InjecAgentToolCallingReward,
+    "BLEUDiversityReward": BLEUDiversityReward,
+    "BERTScoreDiversityReward": BERTScoreDiversityReward,
+    "EmbeddingDiversityReward": EmbeddingDiversityReward,
+    "LLMJudgeDiversityReward": LLMJudgeDiversityReward,
 }

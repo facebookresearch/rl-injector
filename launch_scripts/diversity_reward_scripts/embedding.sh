@@ -7,37 +7,43 @@
 
 set -e
 
-# Add your API keys here
-export AWS_REGION=XXX
-export AWS_ACCESS_KEY_ID=XXX
-export AWS_SECRET_ACCESS_KEY=XXX
-export AWS_SESSION_TOKEN=XXX
-export EXPIRY_TIME=XXX
-export SESSION_DURATION_SECONDS=XXX
-
 export WANDB_PROJECT="RL-Hammer"
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 LR=1e-5
-RUN_NAME=rl_hammer_target_claude_4_lora
+RUN_NAME=rl_hammer_target_llama_3_1_8b_instruct_with_embedding_diversity_reward_lora
 
 ATTACKER_MODEL_NAME_OR_PATH=meta-llama/Llama-3.1-8B-Instruct
+TARGET_MODEL_NAME_OR_PATH=meta-llama/Llama-3.1-8B-Instruct
 
 # Launch target model on GPU 7
 export CUDA_VISIBLE_DEVICES=7
 python -m vllm.entrypoints.openai.api_server \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --port 8010 > /dev/null 2>&1 &
+    --model ${TARGET_MODEL_NAME_OR_PATH} \
+    --port 8010 \
+    --gpu_memory_utilization 0.75 > /dev/null 2>&1 &
 
 until curl -s http://localhost:8010/v1/models; do sleep 5; done
+
+# Launch embedding model on GPU 7
+export CUDA_VISIBLE_DEVICES=7
+python -m vllm.entrypoints.openai.api_server \
+    --model jinaai/jina-embeddings-v3 \
+    --trust_remote_code \
+    --task embed \
+    --port 8030 \
+    --gpu_memory_utilization 0.20 > /dev/null 2>&1 &
+
+until curl -s http://localhost:8030/v1/models; do sleep 5; done
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 accelerate launch \
     train.py \
     --attacker_model_name_or_path ${ATTACKER_MODEL_NAME_OR_PATH} \
-    --target_model_name_or_path "us.anthropic.claude-sonnet-4-20250514-v1:0;meta-llama/Llama-3.1-8B-Instruct" \
-    --target_model_url "dummy;http://localhost:8010/v1" \
-    --reward_functions InjecAgentToolCallingReward \
+    --target_model_name_or_path ${TARGET_MODEL_NAME_OR_PATH} \
+    --target_model_url http://localhost:8010/v1 \
+    --reward_functions InjecAgentToolCallingReward EmbeddingDiversityReward \
+    --reward_weights 1.0 0.25 \
     --dataset data/InjecAgent/dataset/train.json \
     --attn_implementation flash_attention_2 \
     --num_generations 32 \
@@ -69,9 +75,9 @@ for dir in checkpoints/${RUN_NAME}/*; do
         python injecagent_eval.py \
             --attacker_model_name_or_path ${dir} \
             --attacker_base_model_name_or_path ${ATTACKER_MODEL_NAME_OR_PATH} \
-            --target_model_name_or_path us.anthropic.claude-sonnet-4-20250514-v1:0 \
+            --target_model_name_or_path ${TARGET_MODEL_NAME_OR_PATH} \
             --validation_data_path data/InjecAgent/dataset/eval.json \
             --enable_wandb True \
-            --run_name eval_${RUN_NAME}_attack_claude_4
+            --run_name eval_${RUN_NAME}_attack_llama_3_1_8b_instruct
     fi
 done
