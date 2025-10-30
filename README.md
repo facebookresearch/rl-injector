@@ -7,6 +7,18 @@ We introduce RL-Hammer, a simple recipe for training attacker models that automa
 
 ## Setup Environment
 
+### Original Environment
+```
+conda create -n rl-hammer python=3.12 -y
+conda activate rl-hammer
+
+pip install --upgrade pip
+pip install --pre "torch==2.7.0" torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install -r requirements_original.txt
+pip install flash-attn==2.8.2 --no-build-isolation --no-cache-dir
+```
+
+### Using the Latest Library Versions
 ```
 conda create -n rl-hammer python=3.12 -y
 conda activate rl-hammer
