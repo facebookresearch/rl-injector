@@ -95,7 +95,7 @@ python agentdojo_eval.py \
 Evaluate an attacker model:
 ```
 export CUDA_VISIBLE_DEVICES=0
-python injecagent_eval.py \
+python agentdojo_eval.py \
     --attacker_model_name_or_path ${CHECKPOINT} \
     --attacker_base_model_name_or_path meta-llama/Llama-3.1-8B-Instruct \
     --target_model_name_or_path gpt-4o \
@@ -105,4 +105,4 @@ python injecagent_eval.py \
 ```
 
 ## License
-The majority of code is under [CC-BY-NC 4.0 license](LICENSE). TRL library is available under [Apache-2.0 License](https://github.com/huggingface/trl). InjecAgent is under [MIT License](https://github.com/uiuc-kang-lab/InjecAgent/tree/main).
+The majority of code is under [CC-BY-NC 4.0 license](LICENSE). TRL library is available under [Apache-2.0 License](https://github.com/huggingface/trl). InjecAgent is under [MIT License](https://github.com/uiuc-kang-lab/InjecAgent/tree/main). AgentDojo is under [MIT License](https://github.com/ethz-spylab/agentdojo).
