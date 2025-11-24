@@ -9,10 +9,7 @@ from peft import LoraConfig
 # Custom imports
 from config import LocalGRPOConfig
 from reward_func import ALL_REWARD_FUNCS
-from utils import (
-    set_random_seed,
-    InjecAgentDataset,
-)
+from utils import set_random_seed, AgentDojoDataset
 
 
 def main(grpo_config, model_config):
@@ -20,7 +17,9 @@ def main(grpo_config, model_config):
     set_random_seed(grpo_config.seed)
 
     # Load dataset
-    train_set = InjecAgentDataset(grpo_config.dataset)
+    train_set = AgentDojoDataset(
+        grpo_config.dataset, grpo_config.target_model_name_or_path
+    )
 
     # Add reward functions
     reward_functions = [

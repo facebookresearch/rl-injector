@@ -187,3 +187,5 @@ runs/
 data/InjecAgent/dataset/*
 data/InjecAgent/raw/*
 data/InjecAgent/tools.json
+
+data/AgentDojo/dataset/*

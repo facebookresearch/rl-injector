@@ -1,71 +1,95 @@
-# RL Is a Hammer and LLMs Are Nails: A Simple Reinforcement Learning Recipe for Strong Prompt Injection
-
-This code is the official implementation of [RL-Hammer](https://arxiv.org/abs/2510.04885).
-
-## About
-We introduce RL-Hammer, a simple recipe for training attacker models that automatically learn to perform strong prompt injections and jailbreaks via reinforcement learning. RL-Hammer requires no warm-up data and can be trained entirely from scratch. To achieve high ASRs against industrial-level models with defenses, we propose a set of practical techniques that enable highly effective, universal attacks.
+# Branch for AgentDojo Experiment
 
 ## Setup Environment
+After setup the environment from the main branch, you just need to install AgentDojo:
 
-### Original Environment
 ```
-conda create -n rl-hammer python=3.12 -y
-conda activate rl-hammer
-
-pip install --upgrade pip
-pip install --pre "torch==2.7.0" torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-pip install -r requirements_original.txt
-pip install flash-attn==2.8.2 --no-build-isolation --no-cache-dir
+pip install -e AgentDojo
 ```
 
-### Using the Latest Library Versions
-```
-conda create -n rl-hammer python=3.12 -y
-conda activate rl-hammer
-
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install flash-attn --no-build-isolation --no-cache-dir
-```
+This AgentDojo is the exact same version of the original one, but we have added the support to Azure GPT-4o, and attack type (SuperDirectAttack) that just returns the injection goal for training that we replace the injection goal with the adversarial prompt.
 
 ## Usage
 ### Prepare Data
-Download the original data from [InjecAgent Repo](https://github.com/uiuc-kang-lab/InjecAgent/blob/main/data/test_cases_dh_base.json), and move `test_cases_dh_base.json` to `data/InjecAgent/raw`. Then you can run `python data/InjecAgent/split_dataset.py`to split the dataset.
-
-Second, download the [tool file](https://github.com/uiuc-kang-lab/InjecAgent/blob/main/data/tools.json) and move it to `data/InjecAgent`.
-
-### Merge Meta-SecAlign
-Run `python merge_meta_secalign.py` to merge Meta-SecAlign lora if you want to run some tests on Meta-SecAlign
+You can run `data/AgentDojo/split_dataset.py`to split the dataset.
 
 ### Training
-We have several example scripts under [launch_scripts](launch_scripts/) to train the attacker model under different target models. Make sure you add your API keys in the script.
+You can use similar training script in the main branch, but just change the dataset path and reward function. For example:
 
-You can find the training scripts for experiments using the diversity reward in [diversity_reward_scripts](launch_scripts/diversity_reward_scripts).
+```
+# Add your API keys here
+export AZURE_API_VERSION=2024-06-01
+export GPT_4O_AZURE_API_VERSION=2024-06-01
+export GPT_4O_API_KEY=XXX
+export GPT_4O_ENDPOINT=XXX
 
-Note: We use a larger `num_generations` value in the example scripts than in our original experiments. Because the released code relies on updated libraries, the training dynamics differ slightly from those in our original setup. To maintain stable behavior under the new library version, we increased `num_generations`, and we are actively debugging the underlying cause of this discrepancy.
+export WANDB_PROJECT="RL-Hammer"
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
-Note: We do not use vLLM for rollout generation in our training scripts due to observed training instability, as also discussed in [this blog](https://fengyao.notion.site/off-policy-rl).
+LR=1e-5
+RUN_NAME=rl_hammer_agentdojo_target_gpt_4o_lora
+
+ATTACKER_MODEL_NAME_OR_PATH=meta-llama/Llama-3.1-8B-Instruct
+TARGET_MODEL_NAME_OR_PATH=gpt-4o
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+accelerate launch \
+    train.py \
+    --attacker_model_name_or_path ${ATTACKER_MODEL_NAME_OR_PATH} \
+    --target_model_name_or_path ${TARGET_MODEL_NAME_OR_PATH} \
+    --target_model_url dummy \
+    --reward_functions AgentDojoReward \
+    --dataset data/AgentDojo/dataset/train.json \
+    --attn_implementation flash_attention_2 \
+    --num_generations 32 \
+    --num_iterations 1 \
+    --per_device_train_batch_size 16 \
+    --gradient_accumulation_steps 2 \
+    --num_train_epochs 20 \
+    --bf16 True \
+    --beta 0.0 \
+    --warmup_ratio 0.03 \
+    --gradient_checkpointing True \
+    --learning_rate ${LR} \
+    --lr_scheduler_type constant_with_warmup \
+    --use_peft True \
+    --lora_r 128 \
+    --lora_alpha 64 \
+    --lora_dropout 0.05 \
+    --logging_steps 1 \
+    --save_strategy epoch \
+    --save_only_model True \
+    --output_dir checkpoints/${RUN_NAME} \
+    --report_to wandb \
+    --run_name ${RUN_NAME}
+
+# Eval all checkpoints
+export CUDA_VISIBLE_DEVICES=0
+for dir in checkpoints/${RUN_NAME}/*; do
+    if [ -d "$dir" ]; then
+        python agentdojo_eval.py \
+            --attacker_model_name_or_path ${dir} \
+            --attacker_base_model_name_or_path ${ATTACKER_MODEL_NAME_OR_PATH} \
+            --target_model_name_or_path ${TARGET_MODEL_NAME_OR_PATH} \
+            --validation_data_path data/AgentDojo/dataset/eval.json \
+            --enable_wandb True \
+            --run_name agentdojo_eval_${RUN_NAME}_attack_gpt-4o
+    fi
+done
+
+```
 
 ### Evaluation
 Evaluate baseline injections:
 ```
-# Original
+# Tool Knowledge
 export CUDA_VISIBLE_DEVICES=0
-python injecagent_eval.py \
-    --attacker_model_name_or_path default_prompt \
+python agentdojo_eval.py \
+    --attacker_model_name_or_path tool_knowledge \
     --target_model_name_or_path gpt-4o \
-    --validation_data_path data/InjecAgent/dataset/test.json \
+    --validation_data_path data/AgentDojo/dataset/test.json \
     --enable_wandb True \
-    --run_name eval_default_prompt_attack_gpt-4o
-
-# Enhanced
-export CUDA_VISIBLE_DEVICES=0
-python injecagent_eval.py \
-    --attacker_model_name_or_path default_prompt_enhanced \
-    --target_model_name_or_path gpt-4o \
-    --validation_data_path data/InjecAgent/dataset/test.json \
-    --enable_wandb True \
-    --run_name eval_default_prompt_enhanced_attack_gpt-4o
+    --run_name agentdojo_eval_tool_knowledge_attack_gpt-4o
 ```
 
 Evaluate an attacker model:
@@ -75,9 +99,9 @@ python injecagent_eval.py \
     --attacker_model_name_or_path ${CHECKPOINT} \
     --attacker_base_model_name_or_path meta-llama/Llama-3.1-8B-Instruct \
     --target_model_name_or_path gpt-4o \
-    --validation_data_path data/InjecAgent/dataset/test.json \
+    --validation_data_path data/AgentDojo/dataset/test.json \
     --enable_wandb True \
-    --run_name eval_${RUN_NAME}_attack_gpt-4o
+    --run_name agentdojo_eval_${RUN_NAME}_attack_gpt-4o
 ```
 
 ## License
