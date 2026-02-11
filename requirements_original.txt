@@ -6,7 +6,7 @@ evaluate==0.4.3
 bitsandbytes==0.46.0
 trl==0.19.1
 peft==0.15.2
-pillow==11.1.0
+pillow==12.1.1
 protobuf
 ipython
 wandb
