@@ -1,4 +1,4 @@
-vllm==0.11.0
+vllm==0.20.0
 transformers==4.57.0
 datasets==3.6.0
 accelerate==1.10.1
